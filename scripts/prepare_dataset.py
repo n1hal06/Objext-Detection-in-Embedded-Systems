@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         default=Path(__file__).resolve().parents[1],
         help="Project root path. If the flag is provided without a value, current directory is used.",
     )
-    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "coco128"])
+    parser.add_argument("--dataset", type=str, default="coco128", choices=["coco2017", "coco128"])
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--aug-copies", type=int, default=0, help="Offline augmented copies per train image")

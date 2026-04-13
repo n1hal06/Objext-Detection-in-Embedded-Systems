@@ -28,8 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "yolov8n_baseline.yaml")
     parser.add_argument("--amp-ckpt", type=Path, default=Path(__file__).resolve().parents[1] / "runs" / "amp" / "weights" / "best.pt")
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "fbgemm", "qnnpack"])
-    parser.add_argument("--calibration-images", type=int, default=1000)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--calibration-images", type=int, default=256)
+    parser.add_argument("--epochs", type=int, default=None, help="Override QAT epochs from config")
     return parser.parse_args()
 
 
@@ -73,14 +73,14 @@ def main() -> None:
     backend, qconfig_mapping = get_qat_backend(args.backend)
     logging.info("Using QAT backend: %s", backend)
 
-    example_inputs = (torch.randn(1, 3, int(cfg.get("imgsz", 640)), int(cfg.get("imgsz", 640))),)
+    example_inputs = (torch.randn(1, 3, int(cfg.get("imgsz", 512)), int(cfg.get("imgsz", 512))),)
     qat_graph = prepare_qat_fx(pt_model, qconfig_mapping, example_inputs=example_inputs)
     logging.info("Inserted fake-quant nodes with prepare_qat_fx")
 
     calibrate_model(
         qat_graph,
         train_image_dir=project_root / "data" / "images" / "train",
-        imgsz=int(cfg.get("imgsz", 640)),
+        imgsz=int(cfg.get("imgsz", 512)),
         calibration_images=args.calibration_images,
     )
 

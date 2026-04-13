@@ -46,8 +46,9 @@ project-root/
 
 1) Phase 1: Dataset preparation
 
-   python scripts/prepare_dataset.py --project-root . --dataset coco2017
-   # or simply: python scripts/prepare_dataset.py --dataset coco2017
+   python scripts/prepare_dataset.py --project-root . --dataset coco128
+   # fast default for L40: python scripts/prepare_dataset.py
+   # full dataset (slow): python scripts/prepare_dataset.py --dataset coco2017
 
 Expected output:
 - Full COCO2017 downloaded and extracted
@@ -61,11 +62,11 @@ Expected output:
 Expected output:
 - Checkpoint: runs/baseline/weights/best.pt
 - Per-epoch logs including mAP50, mAP50-95, precision, recall, box_loss, cls_loss
-- Default baseline schedule: 150 epochs, lower learning rate, lighter augmentation
+- L40-friendly default schedule: 50 epochs, imgsz 512, 50% dataset fraction
 
 3) Phase 3: AMP fine-tuning
 
-   python scripts/train_amp.py --project-root . --epochs 100
+   python scripts/train_amp.py --project-root .
 
 Expected output:
 - Checkpoint: runs/amp/weights/best.pt
@@ -112,7 +113,8 @@ Expected output:
 
 ## Expected Results (typical)
 
-- FP32 baseline: about 45%+ mAP50 on COCO128, around 5 FPS on Pi CPU
+- Fast profile (L40): shorter runs with lower mAP than full COCO2017 training
+- Full profile (COCO2017 + longer epochs): higher mAP but much longer runtime
 - AMP: comparable mAP50 with faster training time
 - QAT INT8: mAP50 within 2 points of baseline, improved Pi CPU FPS
 - TRT INT8 on Jetson: large FPS boost vs FP32 GPU path

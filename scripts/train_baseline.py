@@ -16,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train YOLOv8n baseline in FP32.")
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "yolov8n_baseline.yaml")
+    parser.add_argument("--epochs", type=int, default=None, help="Override baseline epochs from config")
     parser.add_argument("--name", type=str, default="baseline")
     return parser.parse_args()
 
@@ -54,6 +55,7 @@ def main() -> None:
         cfg,
         name=args.name,
         stage="baseline",
+        epochs_override=args.epochs,
         amp=False,
         pretrained=True,
     )

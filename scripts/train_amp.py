@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "yolov8n_baseline.yaml")
     parser.add_argument("--baseline-ckpt", type=Path, default=Path(__file__).resolve().parents[1] / "runs" / "baseline" / "weights" / "best.pt")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=None, help="Override AMP epochs from config")
     parser.add_argument("--name", type=str, default="amp")
     return parser.parse_args()
 

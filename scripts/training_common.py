@@ -47,6 +47,8 @@ def build_train_args(
         "scale": float(cfg.get("scale", 0.35)),
         "close_mosaic": int(cfg.get("close_mosaic", 20)),
         "patience": int(cfg.get("patience", 40)),
+        "fraction": float(cfg.get("fraction", 1.0)),
+        "workers": int(cfg.get("workers", 8)),
         "project": str(project_root / "runs"),
         "name": name,
         "exist_ok": True,
