@@ -1,7 +1,7 @@
 task: detect
 mode: train
-model: /teamspace/studios/this_studio/Objext-Detection-in-Embedded-Systems/runs/baseline/weights/best.pt
-data: /teamspace/studios/this_studio/Objext-Detection-in-Embedded-Systems/data/dataset.yaml
+model: C:\Users\nihal\OneDrive\Desktop\SEAI Project\project-root\runs\baseline\weights\best.pt
+data: C:\Users\nihal\OneDrive\Desktop\SEAI Project\project-root\data\dataset.yaml
 epochs: 20
 time: null
 patience: 15
@@ -12,7 +12,7 @@ save_period: -1
 cache: false
 device: cpu
 workers: 4
-project: /teamspace/studios/this_studio/Objext-Detection-in-Embedded-Systems/runs
+project: C:\Users\nihal\OneDrive\Desktop\SEAI Project\project-root\runs
 name: amp
 exist_ok: true
 pretrained: false
@@ -80,7 +80,6 @@ warmup_momentum: 0.8
 warmup_bias_lr: 0.1
 box: 7.5
 cls: 0.5
-cls_pw: 0.0
 dfl: 1.5
 pose: 12.0
 kobj: 1.0
@@ -107,4 +106,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: /teamspace/studios/this_studio/Objext-Detection-in-Embedded-Systems/runs/amp
+save_dir: C:\Users\nihal\OneDrive\Desktop\SEAI Project\project-root\runs\amp

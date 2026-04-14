@@ -45,6 +45,8 @@ def main() -> None:
         amp=True,
         pretrained=False,
     )
+    train_args["fraction"] = 1.0
+    train_args["imgsz"] = 640
 
     logging.info("Starting AMP fine-tuning with args: %s", train_args)
     model.train(**train_args)
