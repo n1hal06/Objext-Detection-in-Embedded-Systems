@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import psutil
+import torch
 from ultralytics import YOLO
 
 
@@ -21,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="all", choices=["cpu", "cuda", "trt", "onnx", "all"])
     parser.add_argument("--num-images", type=int, default=200)
     return parser.parse_args()
+
+
+# ✅ NEW: automatic device selector
+def get_device():
+    return "0" if torch.cuda.is_available() else "cpu"
 
 
 def percentile_ms(values: List[float], p: float) -> float:
@@ -95,7 +101,7 @@ def benchmark_onnx(onnx_path: Path, images: List[Path]) -> Dict[str, float]:
 def safe_trt_benchmark(engine_path: Path, images: List[Path]) -> Dict[str, float]:
     try:
         model = YOLO(str(engine_path))
-        return benchmark_yolo_predict(model, images, device="0")
+        return benchmark_yolo_predict(model, images, device=get_device())  # ✅ FIX
     except Exception as exc:
         logging.warning("TensorRT benchmark unavailable: %s", exc)
         return {"fps": float("nan"), "p50_ms": float("nan"), "p95_ms": float("nan"), "peak_ram_mb": float("nan")}
@@ -120,6 +126,9 @@ def main() -> None:
     data_yaml = root / "data" / "dataset.yaml"
     images = load_images(val_dir, args.num_images)
 
+    # ✅ device decided once
+    device = get_device()
+
     baseline = root / "runs" / "baseline" / "weights" / "best.pt"
     amp = root / "runs" / "amp" / "weights" / "best.pt"
     qat_pt = root / "runs" / "qat" / "weights" / "best.pt"
@@ -143,10 +152,10 @@ def main() -> None:
 
     if args.device in ["cuda", "all"] and amp.exists():
         a_model = YOLO(str(amp))
-        stats = benchmark_yolo_predict(a_model, images, device="0")
+        stats = benchmark_yolo_predict(a_model, images, device=device)  # ✅ FIX
         rows.append({
             "Model": "YOLOv8n AMP",
-            "mAP50": get_map50(amp, data_yaml, device="0") * 100,
+            "mAP50": get_map50(amp, data_yaml, device=device) * 100,  # ✅ FIX
             "FPS": stats["fps"],
             "P50 lat (ms)": stats["p50_ms"],
             "P95 lat (ms)": stats["p95_ms"],
@@ -172,7 +181,7 @@ def main() -> None:
         map_source = qat_pt if qat_pt.exists() else amp
         rows.append({
             "Model": "TRT INT8",
-            "mAP50": get_map50(map_source, data_yaml, device="0") * 100,
+            "mAP50": get_map50(map_source, data_yaml, device=device) * 100,  # ✅ FIX
             "FPS": stats["fps"],
             "P50 lat (ms)": stats["p50_ms"],
             "P95 lat (ms)": stats["p95_ms"],
@@ -188,7 +197,12 @@ def main() -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
 
-    logging.info("Benchmark Results Table:\n%s", df.to_markdown(index=False))
+    try:
+        table_str = df.to_markdown(index=False)
+    except ImportError:
+        table_str = df.to_string(index=False)
+
+    logging.info("Benchmark Results Table:\n%s", table_str)
     logging.info("Saved benchmark CSV to %s", out_csv)
 
 

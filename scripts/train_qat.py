@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from torch.ao.quantization.quantize_fx import convert_fx, prepare_qat_fx
+import torch.ao.quantization as tq
 from ultralytics import YOLO
 
 
@@ -68,14 +68,22 @@ def main() -> None:
 
     amp_model = YOLO(str(args.amp_ckpt))
     pt_model = amp_model.model.float()
-    pt_model.eval()
+    pt_model.train()   # ✅ required for QAT
 
     backend, qconfig_mapping = get_qat_backend(args.backend)
     logging.info("Using QAT backend: %s", backend)
 
-    example_inputs = (torch.randn(1, 3, int(cfg.get("imgsz", 512)), int(cfg.get("imgsz", 512))),)
-    qat_graph = prepare_qat_fx(pt_model, qconfig_mapping, example_inputs=example_inputs)
-    logging.info("Inserted fake-quant nodes with prepare_qat_fx")
+    # ✅ Assign qconfig (Eager mode)
+    if hasattr(qconfig_mapping, "global_qconfig"):
+        pt_model.qconfig = qconfig_mapping.global_qconfig
+    else:
+        pt_model.qconfig = qconfig_mapping
+
+    # ✅ Prepare QAT (Eager instead of FX)
+    tq.prepare_qat(pt_model, inplace=True)
+    qat_graph = pt_model
+
+    logging.info("Inserted fake-quant nodes with prepare_qat (Eager mode)")
 
     calibrate_model(
         qat_graph,
@@ -86,6 +94,7 @@ def main() -> None:
 
     amp_model.model = qat_graph
     logging.info("Starting QAT fine-tuning for %d epochs", args.epochs)
+
     qat_train_args = build_train_args(
         project_root,
         cfg,
@@ -96,23 +105,37 @@ def main() -> None:
         pretrained=False,
         lr0_override=float(cfg.get("qat_lr0", cfg.get("lr0", 0.0001))),
     )
+
     amp_model.train(**qat_train_args)
 
-    quantized_model = convert_fx(qat_graph.eval())
+    # ✅ Convert to quantized model (Eager)
+    quantized_model = tq.convert(qat_graph.eval(), inplace=False)
     amp_model.model = quantized_model
 
     out_dir = project_root / "runs" / "qat" / "weights"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     qat_pt = out_dir / "best_qat.pt"
     torch.save({"model": quantized_model.state_dict(), "backend": backend}, qat_pt)
+
     logging.info("Saved QAT INT8 state dict to %s", qat_pt)
 
     baseline_ckpt = project_root / "runs" / "baseline" / "weights" / "best.pt"
-    baseline_map50 = float(YOLO(str(baseline_ckpt)).val(data=str(project_root / "data" / "dataset.yaml")).box.map50) if baseline_ckpt.exists() else float("nan")
-    amp_map50 = float(YOLO(str(args.amp_ckpt)).val(data=str(project_root / "data" / "dataset.yaml")).box.map50)
+
+    baseline_map50 = float(
+        YOLO(str(baseline_ckpt)).val(data=str(project_root / "data" / "dataset.yaml")).box.map50
+    ) if baseline_ckpt.exists() else float("nan")
+
+    amp_map50 = float(
+        YOLO(str(args.amp_ckpt)).val(data=str(project_root / "data" / "dataset.yaml")).box.map50
+    )
+
     qat_best = project_root / "runs" / "qat" / "weights" / "best.pt"
     qat_model_for_eval = YOLO(str(qat_best)) if qat_best.exists() else amp_model
-    qat_map50 = float(qat_model_for_eval.val(data=str(project_root / "data" / "dataset.yaml")).box.map50)
+
+    qat_map50 = float(
+        qat_model_for_eval.val(data=str(project_root / "data" / "dataset.yaml")).box.map50
+    )
 
     logging.info("mAP50 baseline: %.4f", baseline_map50)
     logging.info("mAP50 AMP: %.4f", amp_map50)

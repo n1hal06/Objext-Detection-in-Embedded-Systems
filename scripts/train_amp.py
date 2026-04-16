@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[1] / "configs" / "yolov8n_baseline.yaml")
     parser.add_argument("--baseline-ckpt", type=Path, default=Path(__file__).resolve().parents[1] / "runs" / "baseline" / "weights" / "best.pt")
-    parser.add_argument("--epochs", type=int, default=None, help="Override AMP epochs from config")
+    parser.add_argument("--epochs", type=int, default=30, help="Override AMP epochs from config")
     parser.add_argument("--name", type=str, default="amp")
     return parser.parse_args()
 
@@ -35,7 +36,9 @@ def main() -> None:
     scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
     logging.info("Initialized GradScaler (enabled=%s)", scaler.is_enabled())
 
-    model = YOLO(str(args.baseline_ckpt))
+    amp_best_ckpt = project_root / "runs" / "amp" / "weights" / "best.pt"
+    model_ckpt = amp_best_ckpt if os.path.exists(str(amp_best_ckpt)) else args.baseline_ckpt
+    model = YOLO(str(model_ckpt))
     train_args = build_train_args(
         project_root,
         cfg,
@@ -47,6 +50,8 @@ def main() -> None:
     )
     train_args["fraction"] = 1.0
     train_args["imgsz"] = 640
+    train_args["lr0"] = 0.0001
+    train_args["multi_scale"] = False
 
     logging.info("Starting AMP fine-tuning with args: %s", train_args)
     model.train(**train_args)
