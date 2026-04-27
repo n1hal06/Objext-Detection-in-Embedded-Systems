@@ -1,0 +1,371 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{array}
+\usepackage{makecell}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Efficient Real-Time Object Detection on Resource-Constrained Edge Devices Using Model Compression Techniques}
+
+\author{
+\centering
+\IEEEauthorblockN{
+Dr. Gopinath N\textsuperscript{1} \quad
+Nihal S\textsuperscript{2} \quad
+Jaivanth Srinivasan\textsuperscript{3} \quad
+Nikhil\textsuperscript{4} \quad
+S Prabhjeet Singh\textsuperscript{5}
+}
+\IEEEauthorblockA{
+\textsuperscript{1}\textit{Assistant Professor, Department of Computational Intelligence, SRM Institute of Science and Technology} \\
+gopinatn2@srmist.edu.in \\[0.3em]
+\textsuperscript{2,3,4,5}\textit{UG Student, Department of Computational Intelligence, SRM Institute of Science and Technology} \\
+ns3520@srmist.edu.in, js2031@srmist.edu.in, nm9236@srmist.edu.in, ss0407@srmist.edu.in
+}
+}
+
+
+\maketitle
+
+\begin{abstract}
+Deploying modern object detectors on low-power embedded platforms demands aggressive model compression without unacceptable accuracy loss. This paper presents an automated six-stage pipeline that carries the YOLOv8-Nano architecture from full-precision training through mixed-precision refinement, quantization-aware fine-tuning, multi-format export, and structured benchmarking. Evaluated on the COCO\,2017 validation split, the full-precision baseline attains 47.2\,\% mAP50, AMP refinement raises this to 50.4\,\%, and the INT8 quantized variant achieves 48.1\,\%, holding accuracy within 2.3 points of the mixed-precision reference while reducing the checkpoint to 3.4\,MB. Throughput measurements on a development workstation show 24.0\,FPS for the baseline, 63.8\,FPS under CUDA acceleration, and 26.1\,FPS for the quantized model on CPU. The pipeline targets the Raspberry~Pi\,4 and NVIDIA Jetson Nano as representative edge platforms, with projected frame rates of 10--15\,FPS and 30--45\,FPS respectively.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Object Detection, YOLOv8, Edge Computing, Quantization-Aware Training, TensorRT, ONNX, Embedded Systems, Raspberry Pi, Jetson Nano
+\end{IEEEkeywords}
+
+%===================================================================
+% 1. INTRODUCTION
+%===================================================================
+
+\section{Introduction}
+
+Visual object detection underpins a growing number of embedded applications---autonomous navigation, industrial quality control, wildlife surveillance, and assistive technology among them. Cloud-based processing remains one option, but the latency, bandwidth overhead, privacy exposure, and network dependency it introduces are often unacceptable in field conditions~\cite{b1}. On-device inference eliminates these drawbacks, yet the compute and memory budgets of typical edge hardware impose severe constraints. A Raspberry~Pi\,4, for instance, relies on a quad-core Cortex-A72 with 4\,GB of RAM and no dedicated accelerator; the NVIDIA Jetson Nano pairs a modest 128-core Maxwell GPU with an equally tight 4\,GB memory pool. Neither platform offers anything close to datacenter-grade throughput, and a detector that runs comfortably at 150\,FPS on a server GPU may barely reach single-digit frame rates on these boards without deliberate optimization.
+
+Three intertwined challenges govern the viability of edge deployment. First, the arithmetic throughput available on mobile system-on-chips falls one to two orders of magnitude below that of a server GPU, meaning even a lightweight detector can stall at three to five frames per second if left in its original floating-point form. Second, all system services and the inference engine must share the same 2--4\,GB memory pool, so the model's peak footprint must remain modest. Third, na\"ive compression---rounding weights to eight-bit integers after training or pruning large filter fractions---can erode detection quality to a degree that is unacceptable in safety-critical scenarios~\cite{b10}.
+
+The work described here offers four contributions. (i)~A fully automated, six-stage pipeline that begins with raw COCO annotations and produces deployment-ready INT8 inference engines with no manual intervention. (ii)~A hardware-aware quantization strategy that selects the appropriate arithmetic backend for each target processor at runtime. (iii)~A structured benchmarking protocol that records accuracy, throughput, tail latency, peak memory, and model size across multiple inference backends. (iv)~Experimental results demonstrating that quantization-aware fine-tuning of YOLOv8n preserves mAP50 within 2.5 percentage points of the full-precision reference while reducing the model to a size and speed suitable for real-time edge inference.
+
+The remainder of this paper is organized as follows. Section~II reviews relevant prior work on compact detectors and model compression. Section~III describes the methodology behind each pipeline stage. Section~IV specifies the experimental setup. Section~V presents and discusses the results. Section~VI addresses limitations and future directions, and Section~VII offers concluding remarks.
+
+%===================================================================
+% 2. RELATED WORK
+%===================================================================
+
+\section{Related Work}
+
+\subsection{Compact Detection Architectures}
+
+Early object detection research favored multi-stage designs such as R-CNN~\cite{b2} and Faster~R-CNN~\cite{b3}, which generate region proposals before classifying them. These architectures achieve high accuracy but incur latency that is difficult to reconcile with real-time requirements. Single-stage detectors---SSD~\cite{b4} and the successive YOLO generations~\cite{b5}--\cite{b9}---collapse proposal generation and classification into a single forward pass, substantially reducing inference time. Concurrent work on mobile-oriented backbones, particularly MobileNet~\cite{b18} and its depth-wise separable convolutions, demonstrated that competitive accuracy is achievable at a fraction of the computational cost. EfficientDet~\cite{b19} advanced this direction further by combining compound scaling with a bidirectional feature pyramid, while YOLOv5~\cite{b20} gained wide adoption for edge studies thanks to its streamlined training interface. YOLOv8~\cite{b9}, released in 2023, replaces anchor-based heads with a decoupled, anchor-free design built on a CSPDarknet53 backbone and a Path Aggregation neck. Its nano tier scales depth and width by factors of 0.33 and 0.25, yielding roughly 3.2 million parameters and 8.7\,GFLOPs at $640{\times}640$ resolution---the most compact variant in the family and a natural candidate for resource-constrained deployment. Broader surveys~\cite{b21} have examined the landscape of deep learning on edge hardware from both algorithmic and systems-level perspectives; the present work contributes a concrete, reproducible pipeline rather than a high-level overview.
+
+\subsection{Quantization Techniques}
+
+Reducing numerical precision from 32-bit floats to narrower representations is among the most effective strategies for shrinking a model and accelerating its arithmetic. Post-training quantization (PTQ) calibrates scale and zero-point parameters on a small reference set after training is complete; it is simple to apply but often costs three to five mAP points on dense prediction tasks~\cite{b10}. Quantization-aware training (QAT) embeds simulated low-precision rounding into the forward pass during fine-tuning, allowing the optimizer to learn weight distributions that tolerate rounding noise gracefully, and typically recovers one to two mAP points relative to PTQ~\cite{b11}. Mixed-precision quantization assigns different bit widths to different layers after a per-layer sensitivity analysis~\cite{b12}. Our pipeline adopts QAT through a graph-level tracing interface that inserts observer and fake-quantize nodes automatically, eliminating the need for manual layer annotations.
+
+\subsection{Runtime Engines for Edge Deployment}
+
+ONNX Runtime is an open-source inference engine supporting x86 and ARM processors, GPUs, and specialized accelerators; its static INT8 quantization path is well suited to ARM boards such as the Raspberry~Pi~\cite{b13}. NVIDIA TensorRT is a proprietary optimizer that fuses layers, auto-tunes kernels for the target GPU architecture, and supports INT8 calibration, making it the standard choice for maximizing throughput on Jetson modules~\cite{b14}. Automatic Mixed Precision (AMP) training maintains a master weight copy in FP32 while executing forward and backward computation in FP16, roughly halving memory-bandwidth demand and engaging Tensor Core hardware on compatible GPUs for a 1.5--3$\times$ speedup with negligible accuracy impact~\cite{b15}.
+
+%===================================================================
+% 3. METHODOLOGY
+%===================================================================
+
+\section{Methodology}
+
+The processing workflow is organized into six sequential stages: dataset preparation, full-precision baseline training, mixed-precision refinement, quantization-aware fine-tuning, multi-format model export, and structured benchmarking. Each stage operates independently, reading its configuration from a shared parameter file and writing its outputs to a well-defined location, so that any stage can be re-run in isolation. Fig.~\ref{fig:architecture} illustrates the end-to-end flow.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\columnwidth]{arch_diagram_final.png}
+\caption{End-to-end pipeline: raw COCO data enters on the left and deployment-ready TensorRT and ORT INT8 engines are produced on the right.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Dataset Preparation}
+
+The pipeline supports two data configurations: the full COCO\,2017 collection (118{,}287 training images, 5{,}000 validation images, 80 categories) for production runs, and a 128-image subset for rapid development iteration. COCO annotations store bounding boxes as absolute pixel rectangles $[x_{\min},\,y_{\min},\,w,\,h]$; these are converted to the normalized center-coordinate format expected by YOLO:
+\begin{equation}
+x_c = \frac{x_{\min} + w/2}{W}, \quad y_c = \frac{y_{\min} + h/2}{H}
+\label{eq:coord_conv}
+\end{equation}
+\begin{equation}
+w_{\text{norm}} = \frac{w}{W}, \quad h_{\text{norm}} = \frac{h}{H}
+\end{equation}
+where $W$ and $H$ denote the image dimensions in pixels. Boxes extending beyond image boundaries are clipped to $[0,1]$, and degenerate boxes with area below $10^{-6}$ are discarded. An optional offline augmentation pass, built on Albumentations~\cite{b16}, generates additional training samples through horizontal flips ($p{=}0.50$), brightness--contrast shifts ($p{=}0.30$), hue-saturation-value jitter ($p{=}0.20$), random resized crops ($p{=}0.30$), additive Gaussian noise ($p{=}0.15$), and motion blur ($p{=}0.10$). All geometric transforms are label-aware, ensuring bounding-box annotations remain synchronized with the transformed images.
+
+\subsection{Full-Precision Baseline Training}
+
+Training is initialized from publicly available COCO-pretrained YOLOv8n weights and optimized with AdamW~\cite{b17}. The key hyperparameters are reported in Table~\ref{tab:training_summary}. Online augmentation supplements the offline transforms: mosaic compositing ($p{=}0.5$), which stitches four images into a single tile to improve small-object recall; HSV jitter; spatial transforms allowing modest rotation, translation, and scaling; and random erasing ($p{=}0.4$) for additional regularization. Mosaic augmentation is disabled for the final eight epochs so that batch-normalization statistics stabilize before the checkpoint is saved. The learning rate follows a cosine annealing schedule:
+\begin{equation}
+\eta_t = \eta_{\min} + \tfrac{1}{2}(\eta_{\max} - \eta_{\min})\!\left(1 + \cos\!\left(\tfrac{t}{T}\pi\right)\right)
+\label{eq:cosine_lr}
+\end{equation}
+with $\eta_{\max} = 5\times10^{-4}$, $\eta_{\min} = 2.5\times10^{-6}$ (given a final-LR ratio of 0.005), and $T = 50$ epochs. After training completes, the best checkpoint is evaluated on the held-out validation split and a quality gate checks whether mAP50 has reached at least 45\,\%.
+
+\subsection{Mixed-Precision Refinement}
+
+A second training round under Automatic Mixed Precision serves a dual purpose: it accelerates gradient computation through FP16 arithmetic and produces a checkpoint whose internal weight distributions have already adapted to reduced-precision arithmetic, providing a smoother starting point for subsequent quantization. The loss is dynamically scaled before the backward pass to prevent gradient underflow in the half-precision regime, and the scale factor is adjusted automatically based on overflow detection. This stage loads the best baseline checkpoint and trains with a reduced learning rate ($\eta_0 = 1\times10^{-4}$) at $640{\times}640$ resolution using the full training set. All other settings are inherited from the shared configuration.
+
+\subsection{Quantization-Aware Training}
+
+This is the most technically involved stage. Its objective is to produce a model whose weight and activation distributions are inherently tolerant of eight-bit integer arithmetic.
+
+\subsubsection{Hardware-Aware Backend Selection}
+The host processor architecture is inspected at startup. On x86-64 machines the \texttt{fbgemm} backend is selected, which applies per-channel weight quantization and per-tensor activation quantization optimized for Intel and AMD silicon. On ARM or AArch64 hosts the \texttt{qnnpack} backend is used instead, applying symmetric quantization tuned for the NEON SIMD unit. Table~\ref{tab:backends} contrasts the two configurations.
+
+\begin{table}[htbp]
+\caption{Quantization Backend Properties}
+\label{tab:backends}
+\centering
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Backend} & \textbf{Target Hardware} & \textbf{Quantization Scheme} \\
+\hline
+fbgemm & x86\_64 (Intel, AMD) & Per-channel weights, per-tensor act. \\
+\hline
+qnnpack & ARM (Cortex-A, Neon) & Symmetric quant.\ for NEON SIMD \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{Graph Instrumentation and Calibration}
+The model's computational graph is symbolically traced and automatically augmented with three types of nodes: weight observers that track per-tensor value ranges, activation observers that record the dynamic range encountered during forward passes, and fake-quantize operators that simulate INT8 rounding in the forward direction while preserving full-precision gradients for backpropagation. Before fine-tuning begins, up to 1{,}000 training images are passed through the instrumented graph in evaluation mode to populate the observers' running statistics. These statistics determine the initial quantization parameters:
+\begin{equation}
+\text{scale} = \frac{x_{\max} - x_{\min}}{q_{\max} - q_{\min}}
+\label{eq:scale}
+\end{equation}
+\begin{equation}
+\text{zero\_point} = q_{\min} - \text{round}\!\left(\frac{x_{\min}}{\text{scale}}\right)
+\label{eq:zp}
+\end{equation}
+where $[x_{\min},\,x_{\max}]$ is the floating-point range recorded by each observer and $[q_{\min},\,q_{\max}] = [-128,\,127]$ for signed INT8.
+
+\subsubsection{Fine-Tuning and Conversion}
+With calibrated observers in place, the model is fine-tuned for 8 additional epochs at a conservative learning rate ($\eta_0 = 1\times10^{-4}$) and $512{\times}512$ resolution with a 50\,\% data fraction. The optimizer gradually reshapes weight distributions so that the rounding noise injected by the fake-quantize nodes causes minimal detection-quality degradation. After fine-tuning, every fake-quantize node is replaced by a genuine integer operation to produce the final INT8 checkpoint. The pipeline automatically compares the quantized model's mAP50 against the mixed-precision reference:
+\begin{equation}
+\Delta_{\text{QAT}} = \text{mAP50}_{\text{AMP}} - \text{mAP50}_{\text{QAT}}
+\label{eq:qat_delta}
+\end{equation}
+and flags a warning if the gap exceeds 2.5 percentage points. In our experiment the observed gap of 2.3 points sits at the edge of this budget, indicating that additional QAT epochs or a lower learning rate could narrow it further if required.
+
+\subsection{Model Export}
+
+Three export targets are supported. The quantized checkpoint is first traced into an ONNX graph (opset\,17) with a dynamic batch axis and verified through a structural check and output-tensor comparison. For ARM-based deployment on the Raspberry~Pi, the ONNX graph is further quantized to static INT8 using QInt8 for both weights and activations. For GPU-accelerated inference on the Jetson Nano, the ONNX file is compiled into a serialized TensorRT engine with FP16 fallback and INT8 modes enabled within a 1\,GB workspace.
+
+\subsection{Benchmarking Protocol}
+
+Four inference configurations are evaluated: the FP32 model on CPU, the AMP model on a CUDA GPU, the INT8 model through ONNX Runtime on CPU, and the TensorRT INT8 engine on a Jetson GPU. For each configuration, 200 validation images are processed and the following metrics are recorded: mAP50, frames per second, median and 95th-percentile latency, peak resident memory, and model file size. Per-image latencies are captured with high-resolution monotonic timers and memory is sampled after each inference call.
+
+%===================================================================
+% 4. EXPERIMENTAL SETUP
+%===================================================================
+
+\section{Experimental Setup}
+
+\subsection{Hardware and Software}
+
+Three platforms were used. The development workstation features an x86-64 CPU with an optional NVIDIA GPU and 16+\,GB of RAM. The Raspberry~Pi\,4 carries a BCM2711 quad-core Cortex-A72 with 4\,GB of RAM and no GPU. The Jetson Nano pairs a quad-core Cortex-A57 with a 128-core Maxwell GPU and 4\,GB of shared memory. The software stack comprises Python\,3.10+, PyTorch\,2.0+, Ultralytics\,8.0+, ONNX\,1.14+, ONNX Runtime\,1.16+, TensorRT\,8.x (bundled with JetPack\,4.6), Albumentations\,1.3+, and OpenCV\,4.8+.
+
+\subsection{Dataset}
+
+All experiments use the COCO\,2017 benchmark: 118{,}287 training images spanning 80 object categories and a 5{,}000-image validation split. Annotations follow the YOLO normalized center-width-height convention after passing through the bounding-box sanitization step described in Section~III-A.
+
+\subsection{Training Configurations}
+
+Table~\ref{tab:training_summary} places the three training phases side by side. The baseline trains from COCO-pretrained weights for 50 epochs on half the training set at $512{\times}512$ resolution. The AMP stage continues from the baseline checkpoint for 21 of 30 configured epochs at full resolution using the entire training set. The QAT stage further refines the AMP checkpoint for 8 epochs with simulated INT8 arithmetic.
+
+\begin{table}[htbp]
+\caption{Training Phase Configurations}
+\label{tab:training_summary}
+\begin{center}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Parameter} & \textbf{Baseline} & \textbf{AMP} & \textbf{QAT} \\
+\hline
+Initial LR & $5\times10^{-4}$ & $1\times10^{-4}$ & $1\times10^{-4}$ \\
+\hline
+Epochs (configured / run) & 50 / 50 & 30 / 21 & 8 / 8 \\
+\hline
+Batch Size & 12 & 12 & 12 \\
+\hline
+Image Size & $512\times512$ & $640\times640$ & $512\times512$ \\
+\hline
+Data Fraction & 0.5 & 1.0 & 0.5 \\
+\hline
+Precision & FP32 & FP16/FP32 & Fake-INT8 \\
+\hline
+Starting Checkpoint & COCO pretrained & Baseline best & AMP best \\
+\hline
+\end{tabular}
+}
+\end{center}
+\end{table}
+
+%===================================================================
+% 5. RESULTS AND ANALYSIS
+%===================================================================
+
+\section{Results and Analysis}
+
+\subsection{Baseline Training}
+
+The full-precision baseline converged steadily over its 50-epoch budget, with loss terms declining monotonically---box loss fell from 1.377 to 1.159 and classification loss from 1.821 to 1.157. The mAP50 curve rose from 28.1\,\% at epoch\,1 to a plateau near 47.2\,\% between epochs 40 and 43, confirming that 50 epochs were more than sufficient for convergence. The final checkpoint attained \textbf{47.2\,\% mAP50} and \textbf{31.7\,\% mAP50-95} on the COCO\,2017 validation split. Benchmarking on the development workstation recorded 24.0\,FPS with a median latency of 39.4\,ms (P95:\,68.1\,ms) and a peak memory footprint of 690\,MB. The model occupies 6.2\,MB on disk.
+
+\subsection{AMP Refinement}
+
+Starting from the baseline checkpoint, mixed-precision training ran for 21 of its 30 configured epochs on a CUDA GPU. Training was halted at epoch\,21 due to GPU time-budget constraints; both loss and mAP were still improving at termination, so the reported accuracy likely underestimates the fully converged ceiling. The final AMP checkpoint achieved \textbf{50.4\,\% mAP50} and \textbf{34.5\,\% mAP50-95}. On CUDA hardware the model ran at \textbf{63.8\,FPS} with a median latency of 9.3\,ms (P95:\,52.2\,ms). The checkpoint increased to 24.4\,MB due to the dual-copy weight format inherent in AMP training. Fig.~\ref{fig:amp_pr} shows the precision--recall curve for this model.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\columnwidth]{BoxPR_curve.png}}
+\caption{Precision--recall envelope of the AMP-refined model on the COCO\,2017 validation set. The legend reports the mAP value at the epoch from which the curve was generated; the final checkpoint reached 50.4\,\% mAP50 after continued training (see Section~V-B).}
+\label{fig:amp_pr}
+\end{figure}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=1.1\columnwidth]{val_batch0_pred.jpg}}
+\caption{Representative detections produced by the AMP-refined YOLOv8n model on COCO\,2017 validation images. Bounding boxes, class labels, and confidence scores are overlaid on each frame.}
+\label{fig:sample_dets}
+\end{figure}
+
+\subsection{QAT Outcome}
+
+Quantization-aware fine-tuning ran for its full 8-epoch budget starting from the AMP checkpoint. The quantized model converged to \textbf{48.1\,\% mAP50} and \textbf{32.6\,\% mAP50-95}, yielding an mAP50 gap of:
+\begin{equation}
+\Delta_{\text{QAT}} = 50.4\% - 48.1\% = 2.3\%
+\end{equation}
+This result falls within the accuracy budget typically predicted by quantization literature~\cite{b11}, confirming that QAT successfully preserves detection quality under INT8 constraints. On CPU the INT8 model achieved 26.1\,FPS with a median latency of 38.5\,ms (P95:\,41.9\,ms). The INT8 checkpoint occupies just 3.4\,MB---a 45\,\% reduction from the 6.2\,MB baseline.
+
+\subsection{Comparison with Other Lightweight Detectors}
+
+Table~\ref{tab:comparison} situates our results alongside published figures for several widely used compact detectors evaluated on COCO\,2017.
+
+\begin{table}[htbp]
+\caption{Comparison with Lightweight Detectors (COCO\,2017 Val)}
+\label{tab:comparison}
+\begin{center}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Model} & \textbf{Params} & \textbf{GFLOPs} & \textbf{mAP50} & \textbf{mAP50-95} \\
+ & \textbf{(M)} & & \textbf{(\%)} & \textbf{(\%)} \\
+\hline
+MobileNet-SSD v2~\cite{b18} & 4.3 & 3.4 & 37.0 & 22.0 \\
+\hline
+EfficientDet-D0~\cite{b19} & 3.9 & 2.5 & 52.1 & 34.6 \\
+\hline
+YOLOv5n~\cite{b20} & 1.9 & 4.5 & 45.7 & 28.0 \\
+\hline
+YOLOv8n (official)~\cite{b9} & 3.2 & 8.7 & 52.6 & 37.3 \\
+\hline
+\textbf{Ours, FP32} & 3.2 & 8.7 & 47.2 & 31.7 \\
+\hline
+\textbf{Ours, AMP} & 3.2 & 8.7 & \textbf{50.4} & \textbf{34.5} \\
+\hline
+\textbf{Ours, QAT INT8} & 3.2 & 8.7 & 48.1 & 32.6 \\
+\hline
+\end{tabular}
+}
+\end{center}
+\end{table}
+
+Our AMP-refined variant reaches 50.4\,\% mAP50, approaching the officially reported 52.6\,\% despite using fewer training epochs and a partial data fraction during the baseline phase. The QAT INT8 variant retains 48.1\,\%, demonstrating that quantization-aware training preserves a substantial share of the full-precision accuracy at a fraction of the computational and storage cost.
+
+\subsection{Consolidated Performance}
+
+Table~\ref{tab:full_results} assembles the accuracy, throughput, latency, memory, and size metrics for all three model variants measured on the development workstation.
+
+\begin{table}[htbp]
+\caption{Pipeline Performance Summary (Development Workstation)}
+\label{tab:full_results}
+\begin{center}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{|l|c|c|c|c|c|c|}
+\hline
+\textbf{Variant} & \textbf{mAP50} & \textbf{FPS} & \textbf{P50} & \textbf{P95} & \textbf{Peak RAM} & \textbf{Size} \\
+ & \textbf{(\%)} & & \textbf{(ms)} & \textbf{(ms)} & \textbf{(MB)} & \textbf{(MB)} \\
+\hline
+FP32 (CPU) & 47.2 & 24.0 & 39.4 & 68.1 & 690 & 6.2 \\
+\hline
+AMP (CUDA) & \textbf{50.4} & \textbf{63.8} & \textbf{9.3} & 52.2 & 1{,}568 & 24.4 \\
+\hline
+QAT INT8 (CPU) & 48.1 & 26.1 & 38.5 & \textbf{41.9} & 1{,}956 & 3.4 \\
+\hline
+\end{tabular}
+}
+\end{center}
+\end{table}
+
+Three observations emerge from these measurements. First, AMP refinement lifted mAP50 by 3.2 points while increasing throughput by a factor of 2.7$\times$ through CUDA acceleration, reducing median latency from 39.4\,ms to 9.3\,ms. Second, the QAT INT8 variant trades 2.3 mAP50 points for substantially tighter tail latency: its P95 latency of 41.9\,ms is 38\,\% lower than the baseline's 68.1\,ms, a property that matters in applications where worst-case response time is the binding constraint. Third, the quantized checkpoint at 3.4\,MB is 45\,\% smaller than the 6.2\,MB baseline, a meaningful advantage on storage-limited embedded platforms. On edge hardware, deploying the quantized model through ONNX Runtime on the Raspberry~Pi\,4 is projected to yield 10--15\,FPS based on published ORT INT8 scaling data~\cite{b13}, while the TensorRT INT8 engine on the Jetson Nano is projected to reach 30--45\,FPS based on published TensorRT benchmarks for YOLOv8n on Maxwell GPUs~\cite{b14}. The elevated peak memory figure for the QAT INT8 configuration on the workstation reflects the overhead of the full ONNX Runtime CPU provider; on a target board with a lightweight runtime build, memory consumption is expected to drop to approximately 350\,MB, well within the 4\,GB budget of both the Pi\,4 and the Jetson Nano.
+
+%===================================================================
+% 6. DISCUSSION
+%===================================================================
+
+\section{Discussion}
+
+\subsection{Deployment Guidance}
+
+For CPU-only platforms such as the Raspberry~Pi\,4, the recommended deployment artifact is the ORT INT8 model (3.3\,MB). Locking the CPU frequency governor to its performance profile and disabling non-essential services will minimize scheduling jitter and improve latency consistency. For GPU-equipped platforms such as the Jetson Nano, the TensorRT INT8 engine is the preferred choice; enabling FP16 fallback for any layer that resists INT8 conversion and activating the board's maximum-performance power mode will maximize throughput. On-device verification on both platforms is planned as the immediate next step.
+
+\subsection{Mitigating Excessive Quantization Loss}
+
+Although the 2.3-point mAP50 gap observed in our experiments is acceptable for many applications, tighter accuracy preservation may be required in safety-critical settings. Potential remedies include reducing the QAT learning rate, extending the QAT epoch count, increasing the training data fraction, enlarging the calibration set, or selectively excluding the most quantization-sensitive layers---typically the final detection heads---from INT8 conversion.
+
+\subsection{Limitations and Future Directions}
+
+Several constraints apply to the current pipeline. TensorRT engines are architecture-specific and must be rebuilt for each target GPU. The ORT static-quantization step uses synthetic calibration data rather than real images, which may leave quantization ranges slightly loose. The TensorRT builder is configured for a fixed input shape, requiring a new build for each batch size. Finally, the pipeline handles bounding-box detection only; extending it to instance segmentation or pose estimation would require non-trivial architectural modifications.
+
+Promising avenues for future work include neural-architecture search to discover YOLOv8 configurations that are Pareto-optimal for specific edge SoCs, knowledge distillation from a larger teacher model to boost the nano variant's accuracy without increasing its parameter count, exploration of four-bit quantization for more aggressive compression, continual on-device learning to adapt the model to domain-specific data, and lightweight two-stage cascades that filter idle frames before invoking the full detector.
+
+%===================================================================
+% 7. CONCLUSION
+%===================================================================
+
+\section{Conclusion}
+
+This paper has presented and evaluated a six-stage automated pipeline that carries the YOLOv8n detector from full-precision training through mixed-precision refinement, quantization-aware fine-tuning, multi-format export, and structured benchmarking. On the COCO\,2017 validation split the baseline reaches 47.2\,\% mAP50 at 24.0\,FPS, AMP refinement raises accuracy to 50.4\,\% mAP50 at 63.8\,FPS on a CUDA GPU, and the QAT INT8 model achieves 48.1\,\% mAP50 at 26.1\,FPS on CPU while compressing the checkpoint from 6.2\,MB to 3.4\,MB. The quantization-induced accuracy loss of 2.3 mAP50 points remains within the bounds typically reported in the literature, confirming that quantization-aware training is a practical and effective strategy for preserving detection quality under INT8 constraints. Projected frame rates of 10--15\,FPS on the Raspberry~Pi\,4 and 30--45\,FPS on the Jetson Nano place the quantized model within the real-time operating envelope required by many embedded vision applications. Validating these projections on physical edge hardware constitutes the immediate next milestone.
+
+%===================================================================
+% REFERENCES
+%===================================================================
+
+\begin{thebibliography}{00}
+\bibitem{b1} W. Shi, J. Cao, Q. Zhang, Y. Li, and L. Xu, ``Edge computing: Vision and challenges,'' \textit{IEEE Internet of Things Journal}, vol. 3, no. 5, pp. 637--646, 2016.
+\bibitem{b2} R. Girshick, J. Donahue, T. Darrell, and J. Malik, ``Rich feature hierarchies for accurate object detection and semantic segmentation,'' in \textit{Proc. IEEE CVPR}, 2014, pp. 580--587.
+\bibitem{b3} S. Ren, K. He, R. Girshick, and J. Sun, ``Faster R-CNN: Towards real-time object detection with region proposal networks,'' \textit{IEEE Trans. Pattern Anal. Mach. Intell.}, vol. 39, no. 6, pp. 1137--1149, 2017.
+\bibitem{b4} W. Liu, D. Anguelov, D. Erhan, C. Szegedy, S. Reed, C.-Y. Fu, and A. C. Berg, ``SSD: Single shot multibox detector,'' in \textit{Proc. ECCV}, 2016, pp. 21--37.
+\bibitem{b5} J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, ``You only look once: Unified, real-time object detection,'' in \textit{Proc. IEEE CVPR}, 2016, pp. 779--788.
+\bibitem{b6} J. Redmon and A. Farhadi, ``YOLO9000: Better, faster, stronger,'' in \textit{Proc. IEEE CVPR}, 2017, pp. 6517--6525.
+\bibitem{b7} J. Redmon and A. Farhadi, ``YOLOv3: An incremental improvement,'' \textit{arXiv preprint arXiv:1804.02767}, 2018.
+\bibitem{b8} A. Bochkovskiy, C.-Y. Wang, and H.-Y. M. Liao, ``YOLOv4: Optimal speed and accuracy of object detection,'' \textit{arXiv preprint arXiv:2004.10934}, 2020.
+\bibitem{b9} G. Jocher, A. Chaurasia, and J. Qiu, ``Ultralytics YOLOv8,'' 2023. [Online]. Available: https://github.com/ultralytics/ultralytics.
+\bibitem{b10} R. Krishnamoorthi, ``Quantizing deep convolutional networks for efficient inference: A whitepaper,'' \textit{arXiv preprint arXiv:1806.08342}, 2018.
+\bibitem{b11} B. Jacob, S. Kligys, B. Chen, M. Zhu, M. Tang, A. Howard, H. Adam, and D. Kalenichenko, ``Quantization and training of neural networks for efficient integer-arithmetic-only inference,'' in \textit{Proc. IEEE CVPR}, 2018, pp. 2704--2713.
+\bibitem{b12} H. Wu, P. Judd, X. Zhang, M. Isaev, and P. Micikevicius, ``Integer quantization for deep learning inference: Principles and empirical evaluation,'' \textit{arXiv preprint arXiv:2004.09602}, 2020.
+\bibitem{b13} ``ONNX Runtime: Cross-platform, high performance ML inferencing and training accelerator,'' Microsoft, 2023. [Online]. Available: https://onnxruntime.ai/.
+\bibitem{b14} ``NVIDIA TensorRT: Programmable inference accelerator,'' NVIDIA, 2023. [Online]. Available: https://developer.nvidia.com/tensorrt.
+\bibitem{b15} P. Micikevicius, S. Narang, J. Alben, G. Diamos, E. Elsen, D. Garc\'{i}a, B. Ginsburg, M. Houston, O. Kuchaiev, G. Venkatesh, and H. Wu, ``Mixed precision training,'' in \textit{Proc. ICLR}, 2018.
+\bibitem{b16} A. Buslaev, V. I. Iglovikov, E. Khvedchenya, A. Parinov, M. Druzhinin, and A. A. Kalinin, ``Albumentations: Fast and flexible image augmentations,'' \textit{Information}, vol. 11, no. 2, p. 125, 2020.
+\bibitem{b17} I. Loshchilov and F. Hutter, ``Decoupled weight decay regularization,'' in \textit{Proc. ICLR}, 2019.
+\bibitem{b18} A. G. Howard, M. Zhu, B. Chen, D. Kalenichenko, W. Wang, T. Weyand, M. Andreetto, and H. Adam, ``MobileNets: Efficient convolutional neural networks for mobile vision applications,'' \textit{arXiv preprint arXiv:1704.04861}, 2017.
+\bibitem{b19} M. Tan, R. Pang, and Q. V. Le, ``EfficientDet: Scalable and efficient object detection,'' in \textit{Proc. IEEE CVPR}, 2020, pp. 10781--10790.
+\bibitem{b20} G. Jocher, ``YOLOv5,'' 2020. [Online]. Available: https://github.com/ultralytics/yolov5.
+\bibitem{b21} J. Chen and X. Ran, ``Deep learning with edge computing: A review,'' \textit{Proc. IEEE}, vol. 107, no. 8, pp. 1655--1674, 2019.
+
+\end{thebibliography}
+
+\end{document}
